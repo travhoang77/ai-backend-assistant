@@ -295,18 +295,83 @@ Return JSON:
 
 
 # -------- MAIN AGENT --------
-
 def run_agent(user_input: str, history=None):
     if history is None:
         history = []
 
     history = history[-6:]
 
-    # FOLLOW-UP
+    # -------- FOLLOW-UP --------
     if is_follow_up_query(user_input, history):
         return handle_follow_up(user_input, history)
 
-    # PLAN
+    user_lower = user_input.lower()
+
+    # -------- MIXED QUERY (EXPLAIN + CALC) --------
+    if is_calculation_query(user_input) and any(
+        word in user_lower for word in ["what", "explain", "define", "partition"]
+    ):
+        print("🔥 Mixed query (manual split)")
+
+        # ---- 1. RAG + LLM (EXPLANATION ONLY) ----
+        retrieved_docs = query_documents(user_input)
+        context = "\n\n".join(retrieved_docs[0]) if retrieved_docs else ""
+
+        # remove calculation part so LLM doesn't do math
+        clean_input = re.sub(
+            r"(calculate.*|what will.*be.*)", 
+            "", 
+            user_input, 
+            flags=re.IGNORECASE
+        ).strip()
+
+        explanation = execute_unified_step(clean_input or user_input, context, history)
+
+        # ---- 2. TOOL (CALCULATION ONLY) ----
+        params, error = parse_investment_params(user_input)
+
+        if error:
+            calc_output = json.dumps({
+                "answer": error,
+                "details": []
+            })
+        else:
+            amount, rate, years = params
+            result = calculate_investment(amount, rate, years)
+
+            calc_output = json.dumps({
+                "answer": (
+                    f"An investment of ${amount:,.0f} at {rate*100:.1f}% "
+                    f"for {years} years will grow to approximately ${result:,.2f}."
+                ),
+                "details": []
+            })
+
+        return synthesize_final_answer([explanation, calc_output])
+
+    # -------- PURE CALC (BYPASS PLANNER) --------
+    if is_calculation_query(user_input):
+        print("💰 Direct calculation (bypass planner)")
+
+        params, error = parse_investment_params(user_input)
+
+        if error:
+            return json.dumps({
+                "answer": error,
+                "details": []
+            })
+
+        amount, rate, years = params
+        result = calculate_investment(amount, rate, years)
+
+        return json.dumps({
+            "answer": (
+               f"An investment of {amount:,.0f} at {rate*100:.1f}% for {years:.0f} years will grow to approximately ${result:,.2f}."
+            ),
+            "details": []
+        })
+
+    # -------- NORMAL FLOW (RAG + PLANNER) --------
     plan = create_plan(user_input)
     steps = plan.get("steps", [user_input])
 
@@ -315,46 +380,16 @@ def run_agent(user_input: str, history=None):
     for step in steps:
         print(f"➡️ Step: {step}")
 
-        # -------- 1. CALCULATION (FORCED TOOL) --------
-        if is_calculation_query(step):
-            print("💰 Running calculation tool")
-
-            params, error = parse_investment_params(step)
-
-            if error:
-                final_answers.append(json.dumps({
-                    "answer": error,
-                    "details": []
-                }))
-            else:
-                amount, rate, years = params
-                result = calculate_investment(amount, rate, years)
-
-                calc_output = {
-                    "answer": (
-                        f"An investment of ${amount:,.0f} at {rate*100:.1f}% "
-                        f"for {years} years will grow to approximately ${result:,.2f}."
-                    ),
-                    "details": []
-                }
-
-                final_answers.append(json.dumps(calc_output))
-                continue
-
-        # -------- 2. RAG + LLM --------
         retrieved_docs = query_documents(step)
-        context = "\n\n".join(retrieved_docs[0]) if retrieved_docs else ""
+
+        context = ""
+        if retrieved_docs:
+            if isinstance(retrieved_docs[0], list):
+                context = "\n\n".join(retrieved_docs[0])
+            else:
+                context = "\n\n".join(retrieved_docs)
 
         res = execute_unified_step(step, context, history)
-
-        # avoid duplicate calculation text
-        try:
-            parsed = json.loads(res)
-            answer = parsed.get("answer", "").lower()
-
-            if "investment" not in answer and "$" not in answer:
-                final_answers.append(res)
-        except:
-            final_answers.append(res)
+        final_answers.append(res)
 
     return synthesize_final_answer(final_answers)
