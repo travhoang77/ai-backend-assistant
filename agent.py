@@ -7,6 +7,7 @@ from openai import OpenAI
 
 from tools import get_current_time, calculate_investment
 from rag import query_documents
+from rag import get_memory
 
 # -------- ENV & CLIENT SETUP --------
 
@@ -52,13 +53,11 @@ TOOLS = [
 ]
 
 # -------- HELPERS --------
-
 def safe_json_loads(s, fallback):
     try:
         return json.loads(s)
     except Exception:
         return fallback
-
 
 def execute_tool(tool_call):
     name = tool_call.function.name
@@ -98,7 +97,6 @@ def extract_numbers(step: str):
             pass
 
     return numbers
-
 
 def parse_investment_params(step: str):
     numbers = extract_numbers(step)
@@ -202,13 +200,14 @@ Return JSON:
 
 # -------- UNIFIED STEP (RAG + TOOLS + LLM) --------
 
-def execute_unified_step(step, context, history):
+def execute_unified_step(step, context, history, memory_context=""):
     system_content = f"""
 You are an AI assistant.
 
 CRITICAL RULES:
 - Answer ALL parts of the question
 - Use context if relevant
+- Use memory if it helps personalize the answer
 - Do NOT perform financial calculations yourself
 - If calculation already provided, do NOT repeat it
 
@@ -217,6 +216,9 @@ Return ONLY JSON:
   "answer": "",
   "details": []
 }}
+
+Memory:
+{memory_context}
 
 Context:
 {context}
@@ -261,7 +263,6 @@ Context:
 
     return msg.content
 
-
 # -------- SYNTHESIS --------
 
 def synthesize_final_answer(final_answers: list) -> str:
@@ -295,11 +296,15 @@ Return JSON:
 
 
 # -------- MAIN AGENT --------
-def run_agent(user_input: str, history=None):
+def run_agent(user_input: str, history=None, user_id="default"):
     if history is None:
         history = []
 
     history = history[-6:]
+
+    # ✅ ADD HERE
+    memories = get_memory(user_input, user_id)
+    memory_context = "\n".join(memories)
 
     # -------- FOLLOW-UP --------
     if is_follow_up_query(user_input, history):
@@ -325,8 +330,12 @@ def run_agent(user_input: str, history=None):
             flags=re.IGNORECASE
         ).strip()
 
-        explanation = execute_unified_step(clean_input or user_input, context, history)
-
+        explanation = execute_unified_step(
+        clean_input or user_input,
+        context,
+        history,
+        memory_context
+    )
         # ---- 2. TOOL (CALCULATION ONLY) ----
         params, error = parse_investment_params(user_input)
 
@@ -389,7 +398,7 @@ def run_agent(user_input: str, history=None):
             else:
                 context = "\n\n".join(retrieved_docs)
 
-        res = execute_unified_step(step, context, history)
+        res = execute_unified_step(step, context, history, memory_context)
         final_answers.append(res)
 
     return synthesize_final_answer(final_answers)

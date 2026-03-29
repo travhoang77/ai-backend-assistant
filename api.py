@@ -20,6 +20,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # -------- REQUEST MODEL --------
 class AskRequest(BaseModel):
     question: str
@@ -37,10 +38,10 @@ def ask(req: AskRequest):
     print("📜 HISTORY:", history)
 
     # 🔥 Run agent
-    result = run_agent(question, history)
+    result = run_agent(question, history, user_id)
+    from rag import save_memory  # or memory_vector
 
-    # 🔥 Save user message
-    save_message(user_id, "user", question)
+    save_memory(question, user_id)
 
     # 🔥 Save CLEAN assistant message (IMPORTANT FIX)
     try:
@@ -51,15 +52,14 @@ def ask(req: AskRequest):
 
     save_message(user_id, "assistant", clean_answer)
 
-    return {
-        "success": True,
-        "data": result
-    }
+    return {"success": True, "data": result}
 
 
 # -------- UPLOAD --------
 @app.post("/upload")
-async def upload_pdf(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
+async def upload_pdf(
+    file: UploadFile = File(...), background_tasks: BackgroundTasks = None
+):
     try:
         file_path = f"uploads/{file.filename}"
         os.makedirs("uploads", exist_ok=True)
@@ -69,13 +69,7 @@ async def upload_pdf(file: UploadFile = File(...), background_tasks: BackgroundT
 
         background_tasks.add_task(add_pdf, file_path)
 
-        return {
-            "success": True,
-            "message": f"{file.filename} uploaded. Processing..."
-        }
+        return {"success": True, "message": f"{file.filename} uploaded. Processing..."}
 
     except Exception as e:
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        return {"success": False, "error": str(e)}
