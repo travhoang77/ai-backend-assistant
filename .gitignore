@@ -20,3 +20,5 @@ uploads/
 Thumbs.db
 
 .requirement.txt
+memory.db
+requirements.txt

@@ -1,26 +1,136 @@
-from openai import OpenAI
 import os
 import json
 import re
+
 from dotenv import load_dotenv
+from openai import OpenAI
+
 from tools import get_current_time, calculate_investment
 from rag import query_documents
 
+# -------- ENV & CLIENT SETUP --------
+
 load_dotenv()
 
-# client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-api_key = os.getenv("OPENAI_API_KEY")
-
-if not api_key:
+API_KEY = os.getenv("OPENAI_API_KEY")
+if not API_KEY:
     raise ValueError("OPENAI_API_KEY is not set")
 
-client = OpenAI(api_key=api_key)
+client = OpenAI(api_key=API_KEY)
+
+MODEL = "gpt-4o-mini"
+
+# -------- CONSTANTS --------
+
+FOLLOW_UP_KEYWORDS = ["explain", "simpler", "simplify", "clarify", "rephrase"]
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_current_time",
+            "description": "Returns current time",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "calculate_investment",
+            "description": "Calculate investment growth",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "amount": {"type": "number"},
+                    "rate": {"type": "number"},
+                    "years": {"type": "number"},
+                },
+                "required": ["amount", "rate", "years"],
+            },
+        },
+    },
+]
+
+# -------- HELPERS --------
+
+def safe_json_loads(s, fallback):
+    try:
+        return json.loads(s)
+    except Exception:
+        return fallback
+
+
+def execute_tool(tool_call):
+    name = tool_call.function.name
+
+    if name == "get_current_time":
+        return get_current_time()
+
+    if name == "calculate_investment":
+        args = safe_json_loads(tool_call.function.arguments, {})
+        return calculate_investment(
+            args.get("amount"),
+            args.get("rate"),
+            args.get("years"),
+        )
+
+    return "Unknown tool"
+
+
+def is_follow_up_query(user_input: str, history) -> bool:
+    if not history:
+        return False
+
+    normalized = user_input.lower().strip()
+    is_short = len(normalized.split()) <= 5
+    has_keyword = any(k in normalized for k in FOLLOW_UP_KEYWORDS)
+    return is_short or has_keyword
+
+
+def extract_numbers(step: str):
+    matches = re.findall(r"(\d+(?:\.\d+)?)\s*%?", step)
+    numbers = []
+
+    for m in matches:
+        try:
+            numbers.append(float(m))
+        except:
+            pass
+
+    return numbers
+
+
+def parse_investment_params(step: str):
+    numbers = extract_numbers(step)
+    print("🔢 Extracted numbers:", numbers)
+
+    if len(numbers) < 3:
+        return None, "Could not extract enough numbers."
+
+    amount, rate, years = numbers[:3]
+
+    if rate > 1:
+        rate = rate / 100
+
+    return (amount, rate, years), None
+
+
+def is_calculation_query(step: str):
+    step_lower = step.lower()
+
+    has_numbers = bool(re.search(r"\d", step))
+    has_keywords = any(
+        word in step_lower for word in ["calculate", "%", "interest", "years"]
+    )
+
+    return has_numbers and has_keywords
+
 
 # -------- PLANNER --------
-def create_plan(user_input):
+
+def create_plan(user_input: str) -> dict:
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=MODEL,
         messages=[
             {
                 "role": "system",
@@ -37,273 +147,214 @@ Return JSON:
 {
   "steps": ["step 1", "step 2"]
 }
-"""
+""",
             },
-            {"role": "user", "content": user_input}
-        ]
+            {"role": "user", "content": user_input},
+        ],
     )
 
-    try:
-        return json.loads(response.choices[0].message.content)
-    except Exception as e:
-        print("Plan parsing failed:", e)
-        return {"steps": [user_input]}
+    content = response.choices[0].message.content or ""
+    plan = safe_json_loads(content, {"steps": [user_input]})
+
+    if not isinstance(plan, dict):
+        plan = {"steps": [user_input]}
+
+    if "steps" not in plan or not isinstance(plan["steps"], list):
+        plan["steps"] = [user_input]
+
+    return plan
 
 
-# -------- TOOLS --------
-tools = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_current_time",
-            "description": "Returns current time",
-            "parameters": {"type": "object", "properties": {}}
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "calculate_investment",
-            "description": "Calculate investment growth",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "amount": {"type": "number"},
-                    "rate": {"type": "number"},
-                    "years": {"type": "number"}
-                },
-                "required": ["amount", "rate", "years"]
-            }
-        }
-    }
-]
+# -------- FOLLOW-UP --------
 
+def handle_follow_up(user_input: str, history):
+    print("🧠 Follow-up → skipping planner")
 
-def execute_tool(tool_call):
-    if tool_call.function.name == "get_current_time":
-        return get_current_time()
+    messages = [
+        {
+            "role": "system",
+            "content": """
+You are a conversational AI assistant.
 
-    elif tool_call.function.name == "calculate_investment":
-        args = json.loads(tool_call.function.arguments)
-        return calculate_investment(
-            args["amount"],
-            args["rate"],
-            args["years"]
-        )
-
-    return "Unknown tool"
-
-
-# -------- AGENT --------
-def run_agent(user_input):
-
-    import re
-
-    # 🔥 Helper: extract investment inputs safely
-    def extract_investment_params(text):
-        numbers = re.findall(r"\d+\.?\d*", text)
-
-        if len(numbers) >= 3:
-            amount = float(numbers[0])
-            rate = float(numbers[1]) / 100
-            years = float(numbers[2])
-            return amount, rate, years
-
-        return None
-
-    # 🔥 Step 1: Create plan
-    plan = create_plan(user_input)
-    print("Plan:", plan)
-
-    # 🔥 Normalize steps
-    raw_steps = plan.get("steps", [user_input])
-    steps = []
-
-    for s in raw_steps:
-        if isinstance(s, dict):
-            steps.append(s.get("step", str(s)))
-        else:
-            steps.append(s)
-
-    final_answers = []
-
-    # 🔥 Step 2: Execute steps
-    for step in steps:
-        print("\n--- Executing step ---")
-        print("Step:", step)
-
-        # 🔥 Detect tool needs
-        step_lower = step.lower()
-        needs_calculation = any(word in step_lower for word in [
-            "calculate", "investment", "growth", "future value"
-        ])
-        needs_time = "time" in step_lower
-
-        # 🔥 FORCE deterministic calculation (NEW FIX)
-        params = extract_investment_params(user_input)
-
-        if params and needs_calculation:
-            amount, rate, years = params
-
-            result = calculate_investment(amount, rate, years)
-
-            print("🔧 Forced calculation:", result)
-
-            final_answers.append(json.dumps({
-                "answer": f"An investment of ${amount:,.0f} at {rate*100:.1f}% for {years} years will grow to approximately ${result:,.2f}.",
-                "details": [
-                    f"Amount: {amount}",
-                    f"Rate: {rate}",
-                    f"Years: {years}",
-                    f"Final Value: {result:.2f}"
-                ]
-            }))
-
-            continue
-
-        # 🔍 RAG retrieval
-        retrieved_docs = query_documents(step)
-
-        context_chunks = []
-        if retrieved_docs and len(retrieved_docs) > 0:
-            context_chunks = retrieved_docs[0]
-
-        context = "\n\n".join(
-            [f"Context {i+1}: {doc}" for i, doc in enumerate(context_chunks)]
-        )
-
-        print("\n=== CONTEXT ===\n", context)
-
-        # 🔧 Tool instruction
-        tool_instruction = ""
-        if needs_calculation:
-            tool_instruction = "You MUST call calculate_investment for this step."
-        elif needs_time:
-            tool_instruction = "You MUST call get_current_time for this step."
-
-        messages = [
-            {
-                "role": "system",
-                "content": f"""
-You are a backend engineering AI assistant.
-
-CRITICAL RULES:
-- The CONTEXT below is retrieved from uploaded documents
-- If CONTEXT is not empty, you MUST use it
-- Do NOT ignore context
-- Do NOT say you cannot access documents
-
-TOOL RULES:
-- If a tool is required, you MUST call it
-- If you call a tool, you MUST use its result
-- Do NOT manually calculate
-
-{tool_instruction}
-
-Available tools:
-- get_current_time
-- calculate_investment
-
-Context:
----------------------
-{context}
----------------------
-
-Return JSON:
-{{
-  "answer": "",
-  "details": []
-}}
-"""
-            },
-            {
-                "role": "user",
-                "content": f"""
-Original request:
-{user_input}
-
-Current step:
-{step}
-"""
-            }
-        ]
-
-        MAX_TOOL_STEPS = 3
-
-        for i in range(MAX_TOOL_STEPS):
-            print(f"\n--- Tool loop {i+1} ---")
-
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=messages,
-                tools=tools,
-                tool_choice="auto"
-            )
-
-            message = response.choices[0].message
-
-            if message.tool_calls:
-                print("Tool call detected")
-
-                messages.append(message)
-
-                for tool_call in message.tool_calls:
-                    print("Calling tool:", tool_call.function.name)
-
-                    result = execute_tool(tool_call)
-
-                    print("Tool result:", result)
-
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": str(result)
-                    })
-
-            else:
-                result = message.content
-                print("Step result:", result)
-
-                final_answers.append(result)
-                break
-
-    # 🔥 Step 3: FINAL SYNTHESIS
-    combined_input = "\n\n".join(final_answers)
-
-    print("\n🔧 Synthesizing final answer...\n")
-
-    final_response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": """
-You are an AI assistant.
-
-Combine the following step-by-step outputs into ONE clean, structured answer.
-
-Rules:
-- Do not repeat information
-- Merge overlapping ideas
-- Keep it concise but complete
-- Ensure valid JSON output
+CRITICAL:
+- This is a follow-up
+- Simplify or clarify the SAME answer
+- Do NOT introduce new ideas
 
 Return JSON:
 {
   "answer": "",
   "details": []
 }
-"""
-            },
-            {
-                "role": "user",
-                "content": combined_input
-            }
-        ]
+""",
+        },
+        *history,
+        {"role": "user", "content": user_input},
+    ]
+
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=messages,
     )
 
-    final_output = final_response.choices[0].message.content
+    return response.choices[0].message.content
 
-    print("Final Output:", final_output)
 
-    return final_output
+# -------- UNIFIED STEP (RAG + TOOLS + LLM) --------
+
+def execute_unified_step(step, context, history):
+    system_content = f"""
+You are an AI assistant.
+
+CRITICAL RULES:
+- Answer ALL parts of the question
+- Use context if relevant
+- Do NOT perform financial calculations yourself
+- If calculation already provided, do NOT repeat it
+
+Return ONLY JSON:
+{{
+  "answer": "",
+  "details": []
+}}
+
+Context:
+{context}
+"""
+
+    messages = [
+        {"role": "system", "content": system_content},
+        *history,
+        {"role": "user", "content": step},
+    ]
+
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=messages,
+        tools=TOOLS,
+        tool_choice="auto",
+        response_format={"type": "json_object"},
+    )
+
+    msg = response.choices[0].message
+
+    # handle tool calls
+    if msg.tool_calls:
+        tool_messages = []
+        for tool_call in msg.tool_calls:
+            result = execute_tool(tool_call)
+
+            tool_messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "name": tool_call.function.name,
+                "content": json.dumps(result),
+            })
+
+        final = client.chat.completions.create(
+            model=MODEL,
+            messages=messages + [msg] + tool_messages,
+            response_format={"type": "json_object"},
+        )
+
+        return final.choices[0].message.content
+
+    return msg.content
+
+
+# -------- SYNTHESIS --------
+
+def synthesize_final_answer(final_answers: list) -> str:
+    combined_input = "\n\n".join(final_answers)
+
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": """
+Combine into ONE answer.
+
+Rules:
+- Do NOT add new information
+- Do NOT duplicate content
+- Merge cleanly
+
+Return JSON:
+{
+  "answer": "",
+  "details": []
+}
+""",
+            },
+            {"role": "user", "content": combined_input},
+        ],
+    )
+
+    return response.choices[0].message.content
+
+
+# -------- MAIN AGENT --------
+
+def run_agent(user_input: str, history=None):
+    if history is None:
+        history = []
+
+    history = history[-6:]
+
+    # FOLLOW-UP
+    if is_follow_up_query(user_input, history):
+        return handle_follow_up(user_input, history)
+
+    # PLAN
+    plan = create_plan(user_input)
+    steps = plan.get("steps", [user_input])
+
+    final_answers = []
+
+    for step in steps:
+        print(f"➡️ Step: {step}")
+
+        # -------- 1. CALCULATION (FORCED TOOL) --------
+        if is_calculation_query(step):
+            print("💰 Running calculation tool")
+
+            params, error = parse_investment_params(step)
+
+            if error:
+                final_answers.append(json.dumps({
+                    "answer": error,
+                    "details": []
+                }))
+            else:
+                amount, rate, years = params
+                result = calculate_investment(amount, rate, years)
+
+                calc_output = {
+                    "answer": (
+                        f"An investment of ${amount:,.0f} at {rate*100:.1f}% "
+                        f"for {years} years will grow to approximately ${result:,.2f}."
+                    ),
+                    "details": []
+                }
+
+                final_answers.append(json.dumps(calc_output))
+                continue
+
+        # -------- 2. RAG + LLM --------
+        retrieved_docs = query_documents(step)
+        context = "\n\n".join(retrieved_docs[0]) if retrieved_docs else ""
+
+        res = execute_unified_step(step, context, history)
+
+        # avoid duplicate calculation text
+        try:
+            parsed = json.loads(res)
+            answer = parsed.get("answer", "").lower()
+
+            if "investment" not in answer and "$" not in answer:
+                final_answers.append(res)
+        except:
+            final_answers.append(res)
+
+    return synthesize_final_answer(final_answers)

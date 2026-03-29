@@ -3,40 +3,61 @@ from fastapi.middleware.cors import CORSMiddleware
 from rag import add_pdf
 from pydantic import BaseModel
 from agent import run_agent
+from memory import init_db, get_history, save_message
 import json
 import shutil
 import os
 
+# -------- INIT --------
+init_db()
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # allow all for now
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Request body
+# -------- REQUEST MODEL --------
 class AskRequest(BaseModel):
     question: str
+    user_id: str = "default"
 
-# Response endpoint
+
+# -------- ASK ENDPOINT --------
 @app.post("/ask")
-def ask_ai(request: AskRequest):
+def ask(req: AskRequest):
+    user_id = req.user_id
+    question = req.question
+
+    # 🔥 Load memory
+    history = get_history(user_id)
+    print("📜 HISTORY:", history)
+
+    # 🔥 Run agent
+    result = run_agent(question, history)
+
+    # 🔥 Save user message
+    save_message(user_id, "user", question)
+
+    # 🔥 Save CLEAN assistant message (IMPORTANT FIX)
     try:
-        result = run_agent(request.question)
+        parsed = json.loads(result)
+        clean_answer = parsed.get("answer", result)
+    except:
+        clean_answer = result
 
-        # Try to parse JSON output
-        try:
-            parsed = json.loads(result)
-            return {"success": True, "data": parsed}
-        except:
-            return {"success": True, "data": result}
+    save_message(user_id, "assistant", clean_answer)
 
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-    
+    return {
+        "success": True,
+        "data": result
+    }
+
+
+# -------- UPLOAD --------
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
     try:
@@ -46,12 +67,11 @@ async def upload_pdf(file: UploadFile = File(...), background_tasks: BackgroundT
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # 🔥 Run indexing in background
         background_tasks.add_task(add_pdf, file_path)
 
         return {
             "success": True,
-            "message": f"{file.filename} uploaded. Processing... wait a few seconds before querying."
+            "message": f"{file.filename} uploaded. Processing..."
         }
 
     except Exception as e:

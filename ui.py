@@ -1,5 +1,7 @@
 import streamlit as st
 import requests
+import uuid
+import json
 
 API_URL = "http://127.0.0.1:8000"
 
@@ -10,6 +12,9 @@ st.title("🤖 AI Backend Assistant")
 # -------- SESSION STATE --------
 if "messages" not in st.session_state:
     st.session_state.messages = []
+
+if "user_id" not in st.session_state:
+    st.session_state.user_id = str(uuid.uuid4())
 
 # -------- FILE UPLOAD --------
 st.sidebar.header("📄 Upload Document")
@@ -42,29 +47,53 @@ if prompt:
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Call API
+    # -------- CALL API --------
     with st.spinner("Thinking..."):
         response = requests.post(
             f"{API_URL}/ask",
-            json={"question": prompt}
+            json={
+                "question": prompt,
+                "user_id": st.session_state.user_id  # 🔥 CRITICAL FIX
+            }
         )
 
+    # -------- HANDLE RESPONSE --------
     if response.status_code == 200:
         data = response.json()
 
         if data.get("success"):
-            answer = data["data"]["answer"]
+            try:
+                result = data["data"]
 
-            # Format details nicely
-            details = data["data"].get("details", [])
+                # If backend returns dict
+                if isinstance(result, dict):
+                    answer = result.get("answer", "")
+                    details = result.get("details", [])
+                else:
+                    # If backend returns string JSON
+                    # -------- SAFE PARSING --------
+                    try:
+                        if isinstance(result, dict):
+                            answer = result.get("answer", "")
+                            details = result.get("details", [])
+                        else:
+                            parsed = json.loads(result)
+                            answer = parsed.get("answer", "")
+                            details = parsed.get("details", [])
+                    except:
+                        # 🔥 fallback if not JSON
+                        answer = str(result)
+                        details = []
+                details_text = ""
+                if details:
+                    details_text = "\n\n**Details:**\n"
+                    for d in details:
+                        details_text += f"- {d}\n"
 
-            details_text = ""
-            if details:
-                details_text = "\n\n**Details:**\n"
-                for d in details:
-                    details_text += f"- {d}\n"
+                full_response = answer + details_text
 
-            full_response = answer + details_text
+            except Exception as e:
+                full_response = f"Error parsing response: {e}"
 
         else:
             full_response = data.get("error", "Error occurred")
@@ -72,7 +101,7 @@ if prompt:
     else:
         full_response = "API error"
 
-    # Show assistant message
+    # -------- DISPLAY RESPONSE --------
     with st.chat_message("assistant"):
         st.markdown(full_response)
 
