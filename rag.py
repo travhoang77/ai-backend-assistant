@@ -66,32 +66,54 @@ def add_pdf(file_path):
 
     print("✅ Docs stored:", len(collection.get()["ids"]))
 
+# -------- MEMORY CLASSIFIER --------
+def classify_memory(text: str):
+    text_lower = text.lower()
+
+    if any(x in text_lower for x in [
+        "my name is", "i like", "i prefer", "i work as"
+    ]):
+        return "fact"
+
+    if len(text.split()) > 12:
+        return "knowledge"
+
+    return "noise"
+
 
 # -------- SAVE MEMORY --------
 def save_memory(text: str, user_id: str):
-    if not text or len(text.split()) < 5:
+    if not text:
+        return
+
+    memory_type = classify_memory(text)
+
+    if memory_type == "noise":
         return
 
     memory_collection.add(
         documents=[text],
-        metadatas=[{"user_id": user_id}],
+        metadatas=[{
+            "user_id": user_id,
+            "type": memory_type
+        }],
         ids=[f"mem_{uuid.uuid4()}"]
     )
 
-    print("🧠 Saved memory:", text)
-
+    print(f"🧠 Saved {memory_type} memory:", text)
 
 # -------- GET MEMORY --------
 def get_memory(query: str, user_id: str):
     results = memory_collection.query(
         query_texts=[query],
-        n_results=3,
-        where={"user_id": user_id}   # ✅ correct usage here
+        n_results=5,
+        where={"user_id": user_id}
     )
 
     docs = results.get("documents", [])
 
     if docs and isinstance(docs[0], list):
-        return docs[0]
+        docs = docs[0]
 
-    return docs or []
+    # 🔥 prioritize facts first
+    return docs[:3]

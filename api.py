@@ -7,6 +7,7 @@ from memory import init_db, get_history, save_message
 import json
 import shutil
 import os
+from rag import save_memory  # or memory_vector
 
 # -------- INIT --------
 init_db()
@@ -33,27 +34,23 @@ def ask(req: AskRequest):
     user_id = req.user_id
     question = req.question
 
-    # 🔥 Load memory
     history = get_history(user_id)
     print("📜 HISTORY:", history)
 
-    # 🔥 Run agent
     result = run_agent(question, history, user_id)
-    from rag import save_memory  # or memory_vector
-
-    save_memory(question, user_id)
-
-    # 🔥 Save CLEAN assistant message (IMPORTANT FIX)
+    
     try:
         parsed = json.loads(result)
         clean_answer = parsed.get("answer", result)
     except:
         clean_answer = result
 
+    save_memory(question, user_id)
+    save_memory(clean_answer, user_id)
+    
     save_message(user_id, "assistant", clean_answer)
 
     return {"success": True, "data": result}
-
 
 # -------- UPLOAD --------
 @app.post("/upload")
