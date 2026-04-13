@@ -21,12 +21,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 # -------- REQUEST MODEL --------
 class AskRequest(BaseModel):
     question: str
     user_id: str = "default"
-
 
 # -------- ASK ENDPOINT --------
 @app.post("/ask")

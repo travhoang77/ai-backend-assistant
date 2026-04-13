@@ -22,7 +22,6 @@ memory_collection = client.get_or_create_collection(
     embedding_function=embedding_function
 )
 
-
 # -------- ADD TEXT DOCS --------
 def add_documents(docs):
     for i, doc in enumerate(docs):
@@ -32,7 +31,6 @@ def add_documents(docs):
         )
 
     print("Collection size:", len(collection.get()["ids"]))
-
 
 # -------- QUERY DOCS (RAG) --------
 def query_documents(query):
@@ -44,7 +42,6 @@ def query_documents(query):
     print("📄 RAG results:", results)
 
     return results.get("documents", [])
-
 
 # -------- ADD PDF --------
 def add_pdf(file_path):
@@ -70,6 +67,15 @@ def add_pdf(file_path):
 def classify_memory(text: str):
     text_lower = text.lower()
 
+    # ❌ filter questions (IMPORTANT fix)
+    if any(x in text_lower for x in [
+        "i don't", "i cant", "i can't", "as an ai", "i do not have"
+    ]):
+        return "noise"
+    
+    if any(q in text_lower for q in ["what", "why", "how", "?"]):
+        return "noise"
+
     if any(x in text_lower for x in [
         "my name is", "i like", "i prefer", "i work as"
     ]):
@@ -77,6 +83,9 @@ def classify_memory(text: str):
 
     if len(text.split()) > 12:
         return "knowledge"
+    
+    if len(text.split()) > 50:
+        return "noise"
 
     return "noise"
 
@@ -103,17 +112,52 @@ def save_memory(text: str, user_id: str):
     print(f"🧠 Saved {memory_type} memory:", text)
 
 # -------- GET MEMORY --------
+# def get_memory(query: str, user_id: str):
+#     print("\n🧠 MEMORY QUERY:", query)
+
+#     results = memory_collection.query(
+#         query_texts=[query],
+#         n_results=5,
+#         where={"user_id": user_id}
+#     )
+
+#     docs = results.get("documents", [])
+
+#     if docs and isinstance(docs[0], list):
+#         docs = docs[0]
+
+#     if not docs:
+#         print("🧠 No memory found")
+#         return []
+
+#     print("🧠 Retrieved memories:")
+#     for i, d in enumerate(docs):
+#         print(f"  {i+1}. {d}")
+
+#     return docs[:3]
+
 def get_memory(query: str, user_id: str):
     results = memory_collection.query(
         query_texts=[query],
-        n_results=5,
+        n_results=10,
         where={"user_id": user_id}
     )
 
     docs = results.get("documents", [])
+    metas = results.get("metadatas", [])
 
     if docs and isinstance(docs[0], list):
         docs = docs[0]
+        metas = metas[0]
 
-    # 🔥 prioritize facts first
-    return docs[:3]
+    facts = []
+    knowledge = []
+
+    for doc, meta in zip(docs, metas):
+        if meta.get("type") == "fact":
+            facts.append(doc)
+        else:
+            knowledge.append(doc)
+
+    # 🔥 prioritize facts
+    return facts[:5] + knowledge[:2]

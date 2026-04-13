@@ -53,11 +53,21 @@ TOOLS = [
 ]
 
 # -------- HELPERS --------
+
+def is_statement(user_input: str):
+    user_input = user_input.strip().lower()
+
+    # simple heuristic: not a question
+    return not user_input.endswith("?")
+
 def safe_json_loads(s, fallback):
     try:
         return json.loads(s)
     except Exception:
         return fallback
+
+def format_memories(memories):
+    return " ".join(memories)
 
 def execute_tool(tool_call):
     name = tool_call.function.name
@@ -83,8 +93,17 @@ def is_follow_up_query(user_input: str, history) -> bool:
     normalized = user_input.lower().strip()
     is_short = len(normalized.split()) <= 5
     has_keyword = any(k in normalized for k in FOLLOW_UP_KEYWORDS)
-    return is_short or has_keyword
+    return has_keyword
 
+def is_memory_question(user_input: str):
+    user_input = user_input.lower()
+
+    return any(x in user_input for x in [
+        "what do i",
+        "who am i",
+        "what is my",
+        "what do you know about me"
+    ])
 
 def extract_numbers(step: str):
     matches = re.findall(r"(\d+(?:\.\d+)?)\s*%?", step)
@@ -165,29 +184,32 @@ Return JSON:
 
 # -------- FOLLOW-UP --------
 
-def handle_follow_up(user_input: str, history):
+def handle_follow_up(user_input: str, history, memory_context=""):
     print("🧠 Follow-up → skipping planner")
 
     messages = [
-        {
-            "role": "system",
-            "content": """
+  {
+        "role": "system",
+        "content": f"""
 You are a conversational AI assistant.
 
 CRITICAL:
 - This is a follow-up
-- Simplify or clarify the SAME answer
+- Use memory if relevant
 - Do NOT introduce new ideas
 
+Memory:
+{memory_context}
+
 Return JSON:
-{
+{{
   "answer": "",
   "details": []
-}
-""",
-        },
-        *history,
-        {"role": "user", "content": user_input},
+}}
+"""
+    },
+    *history,
+    {"role": "user", "content": user_input},
     ]
 
     response = client.chat.completions.create(
@@ -304,12 +326,30 @@ def run_agent(user_input: str, history=None, user_id="default"):
 
     # ✅ ADD HERE
     memories = get_memory(user_input, user_id)
-    memory_context = "\n".join(memories)
 
+    memory_context = ""
+
+    if memories:
+        memory_context = "Relevant past info:\n"
+        for m in memories:
+            memory_context += f"- {m}\n"
+
+    # 🔥 ADD THIS LINE (THIS IS STEP 2)
+    print("\n🧠 MEMORY CONTEXT PASSED TO LLM:\n", memory_context)
+
+    # -------- MEMORY QUESTION (FIX) --------
+    if is_memory_question(user_input):
+        print("🧠 Memory question → direct answer")
+
+        if memories:
+            return json.dumps({
+                "answer": format_memories(memories),
+                "details": []
+            })
     # -------- FOLLOW-UP --------
     if is_follow_up_query(user_input, history):
-        return handle_follow_up(user_input, history)
-
+        return handle_follow_up(user_input, history, memory_context)
+    
     user_lower = user_input.lower()
 
     # -------- MIXED QUERY (EXPLAIN + CALC) --------
@@ -381,6 +421,13 @@ def run_agent(user_input: str, history=None, user_id="default"):
         })
 
     # -------- NORMAL FLOW (RAG + PLANNER) --------
+    if is_statement(user_input):
+        print("🧠 Statement detected → no planning")
+
+        return json.dumps({
+            "answer": "Got it.",
+            "details": []
+        })
     plan = create_plan(user_input)
     steps = plan.get("steps", [user_input])
 
