@@ -77,7 +77,11 @@ def classify_memory(text: str):
         return "noise"
 
     if any(x in text_lower for x in [
-        "my name is", "i like", "i prefer", "i work as"
+        "my name is",
+        "i like",
+        "i prefer",
+        "i work as",
+        "i am"
     ]):
         return "fact"
 
@@ -137,6 +141,8 @@ def save_memory(text: str, user_id: str):
 #     return docs[:3]
 
 def get_memory(query: str, user_id: str):
+    print("\n🧠 MEMORY QUERY:", query)
+
     results = memory_collection.query(
         query_texts=[query],
         n_results=10,
@@ -150,14 +156,34 @@ def get_memory(query: str, user_id: str):
         docs = docs[0]
         metas = metas[0]
 
+    if not docs:
+        print("🧠 No memory found")
+        return []
+
+    print("🧠 Retrieved memories:")
+    for i, d in enumerate(docs):
+        print(f"  {i+1}. {d}")
+
+    # 🔥 deduplicate
+    seen = set()
+    unique_docs = []
+    unique_metas = []
+
+    for doc, meta in zip(docs, metas):
+        key = doc.strip().lower()
+        if key not in seen:
+            seen.add(key)
+            unique_docs.append(doc)
+            unique_metas.append(meta)
+
+    # 🔥 prioritize facts
     facts = []
     knowledge = []
 
-    for doc, meta in zip(docs, metas):
+    for doc, meta in zip(unique_docs, unique_metas):
         if meta.get("type") == "fact":
             facts.append(doc)
         else:
             knowledge.append(doc)
 
-    # 🔥 prioritize facts
     return facts[:5] + knowledge[:2]

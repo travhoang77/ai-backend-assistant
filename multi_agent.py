@@ -85,7 +85,34 @@ def synthesizer_agent(results):
             "details": []
         })
 
-    return json.dumps({
-        "answer": "\n\n".join(clean),
-        "details": []
-    })
+    combined = "\n\n".join(clean)
+
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": """
+You are an AI assistant.
+
+Combine the following pieces of information into ONE clear, natural answer.
+
+Rules:
+- Be concise
+- Do NOT repeat information
+- Do NOT add new facts
+- Sound natural and conversational
+
+Return JSON:
+{
+  "answer": "",
+  "details": []
+}
+"""
+            },
+            {"role": "user", "content": combined}
+        ],
+        response_format={"type": "json_object"}
+    )
+
+    return response.choices[0].message.content

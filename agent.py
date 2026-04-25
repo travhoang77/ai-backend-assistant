@@ -48,7 +48,28 @@ def safe_json_loads(s, fallback):
 
 
 def format_memories(memories):
-    return " ".join(memories)
+    if not memories:
+        return ""
+
+    cleaned = []
+
+    for m in memories:
+        m = m.strip()
+
+        # remove trailing punctuation
+        if m.endswith("."):
+            m = m[:-1]
+
+        cleaned.append(m)
+
+    # 🔥 smart phrasing
+    if len(cleaned) == 1:
+        return cleaned[0]
+
+    if len(cleaned) == 2:
+        return f"{cleaned[0]} and {cleaned[1]}"
+
+    return ", ".join(cleaned[:-1]) + f", and {cleaned[-1]}"
 
 
 def is_follow_up_query(user_input: str, history) -> bool:
@@ -63,12 +84,12 @@ def is_follow_up_query(user_input: str, history) -> bool:
 def is_memory_question(user_input: str):
     user_input = user_input.lower()
 
-    return any(x in user_input for x in [
-        "what do i",
-        "who am i",
-        "what is my",
-        "what do you know about me"
-    ])
+    return (
+        "what do i" in user_input
+        or "who am i" in user_input
+        or "what is my" in user_input
+        or "what do you know about me" in user_input
+    )
 
 
 def extract_numbers(step: str):
@@ -159,9 +180,9 @@ def run_agent(user_input: str, history=None, user_id="default"):
 
     print("\n🧠 MEMORY CONTEXT PASSED TO LLM:\n", memory_context)
 
-    # -------- MEMORY QUESTION --------
-    if is_memory_question(user_input):
-        print("🧠 Memory question → direct answer")
+    # -------- MEMORY QUESTION (FORCE OVERRIDE) --------
+    if "what do i" in user_input.lower():
+        print("🧠 Forced memory routing")
 
         if memories:
             return json.dumps({
